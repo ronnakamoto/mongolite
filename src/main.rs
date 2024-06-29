@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use eframe::egui;
 use egui::{Color32, RichText};
 use futures_util::TryStreamExt;
@@ -55,6 +55,8 @@ struct QueryHistoryEntry {
     projection: String,
     sort: String,
     timestamp: i64,
+    database: String,
+    collection: String,
 }
 
 struct QueryHistory {
@@ -71,59 +73,45 @@ impl QueryHistory {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS query_history (
                 id INTEGER PRIMARY KEY,
+                database TEXT NOT NULL,
+                collection TEXT NOT NULL,
                 query TEXT NOT NULL,
+                projection TEXT NOT NULL,
+                sort TEXT NOT NULL,
                 timestamp INTEGER NOT NULL
             )",
             [],
         )?;
 
-        // Check if projection column exists, if not add it
-        if let Err(_) = conn.query_row("SELECT projection FROM query_history LIMIT 1", [], |_| {
-            Ok(())
-        }) {
-            conn.execute(
-                "ALTER TABLE query_history ADD COLUMN projection TEXT DEFAULT ''",
-                [],
-            )?;
-            println!("Added 'projection' column to query_history table");
-        }
-
-        // Check if sort column exists, if not add it
-        if let Err(_) = conn.query_row("SELECT sort FROM query_history LIMIT 1", [], |_| Ok(())) {
-            conn.execute(
-                "ALTER TABLE query_history ADD COLUMN sort TEXT DEFAULT ''",
-                [],
-            )?;
-            println!("Added 'sort' column to query_history table");
-        }
-
-        println!("Query history table created or updated");
+        println!("Query history table created");
 
         Ok(QueryHistory { conn })
     }
 
-    fn add_query(&self, query: &str, projection: &str, sort: &str) -> SqliteResult<()> {
+    fn add_query(&self, database: &str, collection: &str, query: &str, projection: &str, sort: &str) -> SqliteResult<()> {
         let timestamp = Utc::now().timestamp();
         self.conn.execute(
-            "INSERT INTO query_history (query, projection, sort, timestamp) VALUES (?, ?, ?, ?)",
-            [query, projection, sort, &timestamp.to_string()],
+            "INSERT INTO query_history (database, collection, query, projection, sort, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            [database, collection, query, projection, sort, &timestamp.to_string()],
         )?;
         println!("Query added to history: {}", query);
         Ok(())
     }
 
-    fn get_queries(&self, limit: i64) -> SqliteResult<Vec<QueryHistoryEntry>> {
+    fn get_queries(&self, database: &str, collection: &str,limit: i64) -> SqliteResult<Vec<QueryHistoryEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, query, IFNULL(projection, '') as projection, IFNULL(sort, '') as sort, timestamp 
-             FROM query_history ORDER BY timestamp DESC LIMIT ?"
+            "SELECT id, database, collection, query, IFNULL(projection, '') as projection, IFNULL(sort, '') as sort, timestamp 
+             FROM query_history WHERE database = ? AND collection = ? ORDER BY timestamp DESC LIMIT ?"
         )?;
-        let query_iter = stmt.query_map([limit], |row| {
+        let query_iter = stmt.query_map([database, collection, &limit.to_string()], |row| {
             Ok(QueryHistoryEntry {
                 id: row.get(0)?,
-                query: row.get(1)?,
-                projection: row.get(2)?,
-                sort: row.get(3)?,
-                timestamp: row.get(4)?,
+                database: row.get(1)?,
+                collection: row.get(2)?,
+                query: row.get(3)?,
+                projection: row.get(4)?,
+                sort: row.get(5)?,
+                timestamp: row.get(6)?,
             })
         })?;
 
@@ -159,8 +147,10 @@ struct MongoDBClient {
     client: Option<Client>,
     databases: Vec<String>,
     selected_database: String,
+    previous_database: String,
     collections: Vec<String>,
     selected_collection: String,
+    previous_collection: String,
     query: String,
     projection: String,
     sort: String,
@@ -177,16 +167,6 @@ impl MongoDBClient {
         let (tx, rx) = mpsc::channel(100);
         println!("Initializing MongoDBClient");
         let query_history = QueryHistory::new().expect("Failed to initialize query history");
-        let history_entries = match query_history.get_queries(100) {
-            Ok(entries) => {
-                println!("Loaded {} history entries", entries.len());
-                entries
-            }
-            Err(e) => {
-                eprintln!("Failed to load history entries: {}", e);
-                Vec::new()
-            }
-        };
         Self {
             runtime: Runtime::new().expect("Failed to create Tokio runtime"),
             tx,
@@ -196,8 +176,10 @@ impl MongoDBClient {
             client: None,
             databases: Vec::new(),
             selected_database: String::new(),
+            previous_database: String::new(),
             collections: Vec::new(),
             selected_collection: String::new(),
+            previous_collection: String::new(),
             query: String::new(),
             projection: String::new(),
             sort: String::new(),
@@ -206,7 +188,7 @@ impl MongoDBClient {
             view_mode: ViewMode::Table,
             current_left_tab: LeftPanelTab::QueryBuilder,
             query_history,
-            history_entries,
+            history_entries: Vec::new(),
         }
     }
 
@@ -436,6 +418,8 @@ impl MongoDBClient {
             .inner_margin(INNER_PADDING)
             .rounding(ROUNDED_CORNERS)
             .show(ui, |ui| {
+                let mut database_changed = false;
+                let mut collection_changed = false;
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [100.0, CONTROL_HEIGHT],
@@ -443,14 +427,22 @@ impl MongoDBClient {
                     )
                     .on_hover_text("Select the database you want to query.");
 
+                    let mut new_database = self.selected_database.clone();
                     egui::ComboBox::from_id_source("database")
-                        .selected_text(&self.selected_database)
+                        .selected_text(&new_database)
                         .width(200.0)
                         .show_ui(ui, |ui| {
                             for db in &self.databases {
-                                ui.selectable_value(&mut self.selected_database, db.clone(), db);
+                                if ui.selectable_value(&mut new_database, db.clone(), db).clicked() {
+                                    database_changed = true;
+                                }
                             }
                         });
+                    if database_changed {
+                        self.previous_database = self.selected_database.clone();
+                        self.selected_database = new_database;
+                        self.on_database_or_collection_changed();
+                    }
                     if self.custom_button(ui, "Refresh", accent_color).clicked() {
                         self.list_databases();
                     }
@@ -463,18 +455,26 @@ impl MongoDBClient {
                     )
                     .on_hover_text("Select the collection you want to query.");
 
+                    let mut new_collection = self.selected_collection.clone();
                     egui::ComboBox::from_id_source("collection")
-                        .selected_text(&self.selected_collection)
+                        .selected_text(&new_collection)
                         .width(200.0)
                         .show_ui(ui, |ui| {
                             for coll in &self.collections {
-                                ui.selectable_value(
-                                    &mut self.selected_collection,
+                                if ui.selectable_value(
+                                    &mut new_collection,
                                     coll.clone(),
                                     coll,
-                                );
+                                ).clicked() {
+                                    collection_changed = true;
+                                }
                             }
                         });
+                    if collection_changed {
+                        self.previous_collection = self.selected_collection.clone();
+                        self.selected_collection = new_collection;
+                        self.on_database_or_collection_changed();
+                    }
                     if self.custom_button(ui, "Refresh", accent_color).clicked() {
                         self.list_collections(self.selected_database.clone());
                     }
@@ -488,7 +488,7 @@ impl MongoDBClient {
             .inner_margin(INNER_PADDING)
             .rounding(ROUNDED_CORNERS)
             .show(ui, |ui| {
-                ui.heading(RichText::new("Query Builder").size(18.0));
+                ui.heading(RichText::new("Query Builder").color(accent_color).size(16.0));
                 ui.add_space(INNER_PADDING);
 
                 ui.vertical(|ui| {
@@ -551,7 +551,7 @@ impl MongoDBClient {
                 
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        ui.heading(RichText::new("Results").size(18.0).color(accent_color));
+                        ui.heading(RichText::new("Results").size(16.0).color(accent_color));
                         ui.add_space(10.0);
                         ui.selectable_value(&mut self.view_mode, ViewMode::Table, "Table View");
                         ui.selectable_value(&mut self.view_mode, ViewMode::Json, "JSON View");
@@ -741,14 +741,20 @@ impl MongoDBClient {
         // Save query to history
         match self
             .query_history
-            .add_query(&self.query, &self.projection, &self.sort)
+            .add_query(&self.selected_database, &self.selected_collection,&self.query, &self.projection, &self.sort)
         {
             Ok(_) => println!("Successfully added query to history"),
             Err(e) => eprintln!("Failed to save query to history: {}", e),
         }
 
         // Refresh history entries
-        match self.query_history.get_queries(100) {
+        self.refresh_history_entries();
+
+        self.execute_query();
+    }
+
+    fn refresh_history_entries(&mut self) {
+        match self.query_history.get_queries(&self.selected_database, &self.selected_collection,100) {
             Ok(entries) => {
                 self.history_entries = entries;
                 println!(
@@ -758,14 +764,16 @@ impl MongoDBClient {
             }
             Err(e) => eprintln!("Failed to refresh history entries: {}", e),
         }
-
-        self.execute_query();
     }
 
-    fn ui_history(&mut self, ui: &mut egui::Ui, accent_color: Color32, bg_color: Color32) {
+    fn on_database_or_collection_changed(&mut self) {
+        self.refresh_history_entries();
+    }
+
+    fn ui_history(&mut self, ui: &mut egui::Ui, accent_color: Color32) {
         ui.heading(
             RichText::new("Query History")
-                .size(24.0)
+                .size(16.0)
                 .color(accent_color),
         );
         ui.add_space(10.0);
@@ -776,7 +784,7 @@ impl MongoDBClient {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (index, entry) in self.history_entries.iter().enumerate().rev() {
                     let timestamp =
-                        chrono::NaiveDateTime::from_timestamp_opt(entry.timestamp, 0).unwrap();
+                        DateTime::from_timestamp(entry.timestamp, 0).unwrap();
                     let formatted_time = timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
 
                     egui::CollapsingHeader::new(format!(
@@ -830,7 +838,7 @@ impl MongoDBClient {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Refresh History").clicked() {
-                if let Ok(entries) = self.query_history.get_queries(100) {
+                if let Ok(entries) = self.query_history.get_queries(&self.selected_database, &self.selected_collection, 100) {
                     self.history_entries = entries;
                 }
             }
@@ -860,7 +868,7 @@ impl MongoDBClient {
 
                 // Title
                 ui.heading(
-                    RichText::new("MongoDB Client")
+                    RichText::new("Mongolite")
                         .color(accent_color)
                         .size(32.0),
                 );
@@ -925,7 +933,7 @@ impl MongoDBClient {
                                             self.ui_query_builder(ui, accent_color, bg_color)
                                         }
                                         LeftPanelTab::History => {
-                                            self.ui_history(ui, accent_color, bg_color)
+                                            self.ui_history(ui, accent_color)
                                         }
                                     }
                                 });
@@ -1005,7 +1013,7 @@ fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
     eframe::run_native(
-        "MongoDB Client",
+        "Mongolite",
         options,
         Box::new(|cc| Box::new(MongoDBClient::new(cc))),
     )
