@@ -488,7 +488,7 @@ impl MongoDBClient {
             .inner_margin(INNER_PADDING)
             .rounding(ROUNDED_CORNERS)
             .show(ui, |ui| {
-                ui.heading(RichText::new("Query Builder").size(18.0));
+                ui.heading(RichText::new("Query Builder").color(accent_color).size(16.0));
                 ui.add_space(INNER_PADDING);
 
                 ui.vertical(|ui| {
@@ -551,7 +551,7 @@ impl MongoDBClient {
                 
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        ui.heading(RichText::new("Results").size(18.0).color(accent_color));
+                        ui.heading(RichText::new("Results").size(16.0).color(accent_color));
                         ui.add_space(10.0);
                         ui.selectable_value(&mut self.view_mode, ViewMode::Table, "Table View");
                         ui.selectable_value(&mut self.view_mode, ViewMode::Json, "JSON View");
@@ -770,10 +770,10 @@ impl MongoDBClient {
         self.refresh_history_entries();
     }
 
-    fn ui_history(&mut self, ui: &mut egui::Ui, accent_color: Color32, bg_color: Color32) {
+    fn ui_history(&mut self, ui: &mut egui::Ui, accent_color: Color32) {
         ui.heading(
             RichText::new("Query History")
-                .size(24.0)
+                .size(16.0)
                 .color(accent_color),
         );
         ui.add_space(10.0);
@@ -933,7 +933,7 @@ impl MongoDBClient {
                                             self.ui_query_builder(ui, accent_color, bg_color)
                                         }
                                         LeftPanelTab::History => {
-                                            self.ui_history(ui, accent_color, bg_color)
+                                            self.ui_history(ui, accent_color)
                                         }
                                     }
                                 });
