@@ -809,16 +809,17 @@ impl MongoDBClient {
                 .color(accent_color),
         );
         ui.add_space(10.0);
-
+    
         if self.history_entries.is_empty() {
             ui.label(RichText::new("No history entries available.").italics());
         } else {
+            let mut query_to_load: Option<(String, String, String)> = None;
+    
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (index, entry) in self.history_entries.iter().enumerate().rev() {
-                    let timestamp =
-                        DateTime::from_timestamp(entry.timestamp, 0).unwrap();
+                    let timestamp = DateTime::from_timestamp(entry.timestamp, 0).unwrap();
                     let formatted_time = timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-
+    
                     egui::CollapsingHeader::new(format!(
                         "Query {}: {}",
                         self.history_entries.len() - index,
@@ -831,7 +832,7 @@ impl MongoDBClient {
                         ui.label(RichText::new("Timestamp:").strong());
                         ui.label(formatted_time);
                         ui.add_space(5.0);
-
+    
                         ui.label(RichText::new("Query:").strong());
                         ui.add(
                             egui::TextEdit::multiline(&mut entry.query.as_str())
@@ -840,33 +841,42 @@ impl MongoDBClient {
                                 .lock_focus(true)
                                 .interactive(false),
                         );
-
+    
                         if !entry.projection.is_empty() {
                             ui.add_space(5.0);
                             ui.label(RichText::new("Projection:").strong());
                             ui.label(&entry.projection);
                         }
-
+    
                         if !entry.sort.is_empty() {
                             ui.add_space(5.0);
                             ui.label(RichText::new("Sort:").strong());
                             ui.label(&entry.sort);
                         }
-
+    
                         ui.add_space(10.0);
                         if ui.button("Load Query").clicked() {
-                            self.query = entry.query.clone();
-                            self.projection = entry.projection.clone();
-                            self.sort = entry.sort.clone();
-                            self.current_left_tab = LeftPanelTab::QueryBuilder;
+                            query_to_load = Some((
+                                entry.query.clone(),
+                                entry.projection.clone(),
+                                entry.sort.clone(),
+                            ));
                         }
                     });
                     ui.add_space(5.0);
                     ui.separator();
                 }
             });
+    
+            // Handle loading query outside of the closure
+            if let Some((query, projection, sort)) = query_to_load {
+                self.query = query;
+                self.projection = projection;
+                self.sort = sort;
+                self.current_left_tab = LeftPanelTab::QueryBuilder;
+            }
         }
-
+    
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Refresh History").clicked() {
@@ -992,6 +1002,7 @@ impl MongoDBClient {
     }
 
     fn add_new_profile(&mut self, ctx: &egui::Context) -> bool {
+        let accent_color = Color32::from_rgb(15, 157, 88); // Google Green
         let mut new_profile = ConnectionProfile {
             id: Uuid::new_v4().to_string(),
             name: String::new(),
@@ -1013,7 +1024,7 @@ impl MongoDBClient {
                     ui.label("Connection String:");
                     ui.text_edit_singleline(&mut new_profile.connection_string);
                 });
-                if ui.button("Save").clicked() {
+                if self.custom_button(ui, "Save", accent_color).clicked() {
                     if new_profile.name.is_empty() || new_profile.connection_string.is_empty() {
                         self.status_message = "Name and Connection String cannot be empty".to_string();
                     } else {
@@ -1046,6 +1057,7 @@ impl MongoDBClient {
         let mut open = true;
         let mut profile_updated = false;
         let mut should_close = false;
+        let accent_color = Color32::from_rgb(15, 157, 88); // Google Green
 
         egui::Window::new("Edit Profile")
             .open(&mut open)
@@ -1058,7 +1070,7 @@ impl MongoDBClient {
                     ui.label("Connection String:");
                     ui.text_edit_singleline(&mut edited_profile.connection_string);
                 });
-                if ui.button("Save").clicked() {
+                if self.custom_button(ui, "Save", accent_color).clicked() {
                     if edited_profile.name.is_empty() || edited_profile.connection_string.is_empty() {
                         self.status_message = "Name and Connection String cannot be empty".to_string();
                     } else {
@@ -1105,78 +1117,66 @@ impl MongoDBClient {
         let mut profiles_to_refresh = false;
         let mut profile_to_delete = None;
         let mut profile_to_edit = None;
+        let mut profile_to_use = None;
         let mut open = self.show_connection_manager;
         let mut close_window = false;
     
+        let accent_color = Color32::from_rgb(15, 157, 88); // Google Green
+        let bg_color = Color32::from_rgb(248, 249, 250); // Light Gray
+        let text_color = Color32::from_rgb(60, 64, 67); // Dark Gray
+    
         egui::Window::new("Connection Manager")
             .open(&mut open)
+            .resizable(true)
+            .default_size([400.0, 300.0])
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (index, profile) in self.profiles.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(&profile.name);
-                            if ui.button("Edit").clicked() {
-                                profile_to_edit = Some(index);
-                            }
-                            if ui.button("Delete").clicked() {
-                                profile_to_delete = Some(index);
-                            }
-                            if ui.button("Use").clicked() {
-                                self.connection_string = profile.connection_string.clone();
-                                close_window = true;
+                ui.style_mut().visuals.override_text_color = Some(text_color);
+                ui.style_mut().spacing.item_spacing = egui::vec2(10.0, 10.0);
+    
+                egui::Frame::none()
+                    .fill(bg_color)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.heading(RichText::new("Connection Profiles").color(accent_color).size(16.0));
+                        ui.add_space(10.0);
+    
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for (index, profile) in self.profiles.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&profile.name).color(text_color));
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if self.custom_button(ui,"Use", accent_color).clicked() {
+                                            profile_to_use = Some(index);
+                                        }
+                                        if self.custom_button(ui, "Delete", accent_color).clicked() {
+                                            profile_to_delete = Some(index);
+                                        }
+                                        if self.custom_button(ui, "Edit", accent_color).clicked() {
+                                            profile_to_edit = Some(index);
+                                        }
+                                    });
+                                });
+                                ui.add_space(5.0);
+                                ui.separator();
+                                ui.add_space(5.0);
                             }
                         });
-                    }
-                });
-                
-                ui.separator();
-                
-                if ui.button("Add New Profile").clicked() {
-                    self.add_profile_open = true;
-                    self.new_profile = ConnectionProfile {
-                        id: Uuid::new_v4().to_string(),
-                        name: String::new(),
-                        connection_string: String::new(),
-                    };
-                }
+                        
+                        ui.add_space(10.0);
+                        
+                        if self.custom_button(ui, "Add New Profile", accent_color).clicked() {
+                            self.add_profile_open = true;
+                            self.new_profile = ConnectionProfile {
+                                id: Uuid::new_v4().to_string(),
+                                name: String::new(),
+                                connection_string: String::new(),
+                            };
+                        }
+                    });
     
                 // Add Profile Modal
                 if self.add_profile_open {
-                    egui::Window::new("Add New Profile")
-                        .collapsible(false)
-                        .resizable(false)
-                        .show(ctx, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Name:");
-                                ui.text_edit_singleline(&mut self.new_profile.name);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Connection String:");
-                                ui.text_edit_singleline(&mut self.new_profile.connection_string);
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.button("Save").clicked() {
-                                    if self.new_profile.name.is_empty() || self.new_profile.connection_string.is_empty() {
-                                        self.status_message = "Name and Connection String cannot be empty".to_string();
-                                    } else {
-                                        let dummy_key = [0u8; 32];
-                                        match self.connection_manager.add_profile(&self.new_profile, &dummy_key) {
-                                            Ok(_) => {
-                                                self.status_message = "Profile added successfully".to_string();
-                                                profiles_to_refresh = true;
-                                                self.add_profile_open = false;
-                                            }
-                                            Err(e) => {
-                                                self.status_message = format!("Failed to add profile: {}", e);
-                                            }
-                                        }
-                                    }
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    self.add_profile_open = false;
-                                }
-                            });
-                        });
+                    self.show_add_profile_modal(ctx, &mut profiles_to_refresh);
                 }
             });
     
@@ -1185,6 +1185,12 @@ impl MongoDBClient {
         }
     
         self.show_connection_manager = open;
+    
+        // Handle profile usage
+        if let Some(index) = profile_to_use {
+            self.connection_string = self.profiles[index].connection_string.clone();
+            close_window = true;
+        }
     
         // Handle profile deletion
         if let Some(index) = profile_to_delete {
@@ -1207,6 +1213,64 @@ impl MongoDBClient {
         if profiles_to_refresh {
             self.refresh_profiles();
         }
+    }
+    
+    fn show_add_profile_modal(&mut self, ctx: &egui::Context, profiles_to_refresh: &mut bool) {
+        let accent_color = Color32::from_rgb(15, 157, 88); // Google Green
+        let bg_color = Color32::from_rgb(248, 249, 250); // Light Gray
+        let text_color = Color32::from_rgb(60, 64, 67); // Dark Gray
+    
+        egui::Window::new("Add New Profile")
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([350.0, 150.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.style_mut().visuals.override_text_color = Some(text_color);
+                ui.style_mut().spacing.item_spacing = egui::vec2(10.0, 10.0);
+    
+                egui::Frame::none()
+                    .fill(bg_color)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.heading(RichText::new("Add New Profile").color(accent_color).size(16.0));
+                        ui.add_space(10.0);
+    
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Name:").color(text_color));
+                            ui.add(egui::TextEdit::singleline(&mut self.new_profile.name)
+                                .desired_width(200.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Connection String:").color(text_color));
+                            ui.add(egui::TextEdit::singleline(&mut self.new_profile.connection_string)
+                                .desired_width(200.0));
+                        });
+                        ui.add_space(10.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.custom_button(ui, "Cancel", accent_color).clicked() {
+                                self.add_profile_open = false;
+                            }
+                            if self.custom_button(ui, "Save", accent_color).clicked() {
+                                if self.new_profile.name.is_empty() || self.new_profile.connection_string.is_empty() {
+                                    self.status_message = "Name and Connection String cannot be empty".to_string();
+                                } else {
+                                    let dummy_key = [0u8; 32];
+                                    match self.connection_manager.add_profile(&self.new_profile, &dummy_key) {
+                                        Ok(_) => {
+                                            self.status_message = "Profile added successfully".to_string();
+                                            *profiles_to_refresh = true;
+                                            self.add_profile_open = false;
+                                        }
+                                        Err(e) => {
+                                            self.status_message = format!("Failed to add profile: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    });
+            });
     }
 }
 
