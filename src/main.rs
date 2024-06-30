@@ -14,6 +14,14 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, Mutex};
 
+mod errors;
+mod encryption;
+mod connection_manager;
+
+use connection_manager::{ConnectionManager, ConnectionProfile};
+use log::{error, info};
+use uuid::Uuid;
+
 const OUTER_PADDING: f32 = 20.0;
 const INNER_PADDING: f32 = 10.0;
 const ITEM_SPACING: f32 = 8.0;
@@ -66,7 +74,7 @@ struct QueryHistory {
 impl QueryHistory {
     fn new() -> SqliteResult<Self> {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("query_history.db");
+        path.push("mongolite.db");
         println!("Opening database at: {:?}", path);
         let conn = Connection::open(path)?;
 
@@ -160,6 +168,11 @@ struct MongoDBClient {
     current_left_tab: LeftPanelTab,
     query_history: QueryHistory,
     history_entries: Vec<QueryHistoryEntry>,
+    connection_manager: ConnectionManager,
+    profiles: Vec<ConnectionProfile>,
+    show_connection_manager: bool,
+    add_profile_open: bool,
+    new_profile: ConnectionProfile,
 }
 
 impl MongoDBClient {
@@ -167,6 +180,11 @@ impl MongoDBClient {
         let (tx, rx) = mpsc::channel(100);
         println!("Initializing MongoDBClient");
         let query_history = QueryHistory::new().expect("Failed to initialize query history");
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("mongolite.db");
+        let connection_manager = ConnectionManager::new(path).expect("Failed to initialize ConnectionManager");
+        let profiles = Vec::new();
+
         Self {
             runtime: Runtime::new().expect("Failed to create Tokio runtime"),
             tx,
@@ -189,6 +207,15 @@ impl MongoDBClient {
             current_left_tab: LeftPanelTab::QueryBuilder,
             query_history,
             history_entries: Vec::new(),
+            connection_manager,
+            profiles,
+            show_connection_manager: false,
+            add_profile_open: false,
+            new_profile: ConnectionProfile {
+                id: Uuid::new_v4().to_string(),
+                name: String::new(),
+                connection_string: String::new(),
+            },
         }
     }
 
@@ -366,14 +393,14 @@ impl MongoDBClient {
                         egui::Label::new(RichText::new("Connection:").strong()),
                     )
                     .on_hover_text("Enter your MongoDB connection string here.");
-
+    
                     ui.add_sized(
-                        [ui.available_width() - 120.0, CONTROL_HEIGHT],
+                        [ui.available_width() - 240.0, CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut self.connection_string)
                             .hint_text("mongodb://username:password@host:port/database"),
                     )
                     .on_hover_text("Example: mongodb://username:password@host:port/database");
-
+    
                     if self
                         .custom_button(
                             ui,
@@ -402,6 +429,11 @@ impl MongoDBClient {
                                 self.status_message = "Disconnected".to_string();
                             }
                         }
+                    }
+    
+                    if self.custom_button(ui, "Manage Connections", accent_color).clicked() {
+                        self.show_connection_manager = true;
+                        self.refresh_profiles();
                     }
                 });
             });
@@ -958,6 +990,224 @@ impl MongoDBClient {
             });
         });
     }
+
+    fn add_new_profile(&mut self, ctx: &egui::Context) -> bool {
+        let mut new_profile = ConnectionProfile {
+            id: Uuid::new_v4().to_string(),
+            name: String::new(),
+            connection_string: String::new(),
+        };
+
+        let mut open = true;
+        let mut profile_added = false;
+        let mut should_close = false;
+
+        egui::Window::new("Add New Profile")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut new_profile.name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Connection String:");
+                    ui.text_edit_singleline(&mut new_profile.connection_string);
+                });
+                if ui.button("Save").clicked() {
+                    if new_profile.name.is_empty() || new_profile.connection_string.is_empty() {
+                        self.status_message = "Name and Connection String cannot be empty".to_string();
+                    } else {
+                        // For simplicity, we're using a dummy key here. In a real application, you'd use a proper key management system.
+                        let dummy_key = [0u8; 32];
+                        match self.connection_manager.add_profile(&new_profile, &dummy_key) {
+                            Ok(_) => {
+                                self.status_message = "Profile added successfully".to_string();
+                                self.refresh_profiles();
+                                profile_added = true;
+                                should_close = true;
+                            }
+                            Err(e) => {
+                                self.status_message = format!("Failed to add profile: {}", e);
+                            }
+                        }
+                    }
+                }
+            });
+
+        if should_close {
+            open = false;
+        }
+
+        open && !profile_added
+    }
+
+    fn edit_profile(&mut self, ctx: &egui::Context, profile: &ConnectionProfile) -> bool {
+        let mut edited_profile = profile.clone();
+        let mut open = true;
+        let mut profile_updated = false;
+        let mut should_close = false;
+
+        egui::Window::new("Edit Profile")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut edited_profile.name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Connection String:");
+                    ui.text_edit_singleline(&mut edited_profile.connection_string);
+                });
+                if ui.button("Save").clicked() {
+                    if edited_profile.name.is_empty() || edited_profile.connection_string.is_empty() {
+                        self.status_message = "Name and Connection String cannot be empty".to_string();
+                    } else {
+                        // For simplicity, we're using a dummy key here. In a real application, you'd use a proper key management system.
+                        let dummy_key = [0u8; 32];
+                        match self.connection_manager.update_profile(&edited_profile, &dummy_key) {
+                            Ok(_) => {
+                                self.status_message = "Profile updated successfully".to_string();
+                                self.refresh_profiles();
+                                profile_updated = true;
+                                should_close = true;
+                            }
+                            Err(e) => {
+                                self.status_message = format!("Failed to update profile: {}", e);
+                            }
+                        }
+                    }
+                }
+            });
+
+        if should_close {
+            open = false;
+        }
+
+        open && !profile_updated
+    }
+
+    fn refresh_profiles(&mut self) {
+        // For simplicity, we're using a dummy key here. In a real application, you'd use a proper key management system.
+        let dummy_key = [0u8; 32];
+        match self.connection_manager.get_profiles(&dummy_key) {
+            Ok(profiles) => {
+                self.profiles = profiles;
+                self.status_message = format!("Loaded {} connection profiles", self.profiles.len());
+            }
+            Err(e) => {
+                error!("Failed to load connection profiles: {:?}", e);
+                self.status_message = format!("Failed to load connection profiles: {}", e);
+            }
+        }
+    }
+
+    fn ui_connection_manager(&mut self, ctx: &egui::Context) {
+        let mut profiles_to_refresh = false;
+        let mut profile_to_delete = None;
+        let mut profile_to_edit = None;
+        let mut open = self.show_connection_manager;
+        let mut close_window = false;
+    
+        egui::Window::new("Connection Manager")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (index, profile) in self.profiles.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(&profile.name);
+                            if ui.button("Edit").clicked() {
+                                profile_to_edit = Some(index);
+                            }
+                            if ui.button("Delete").clicked() {
+                                profile_to_delete = Some(index);
+                            }
+                            if ui.button("Use").clicked() {
+                                self.connection_string = profile.connection_string.clone();
+                                close_window = true;
+                            }
+                        });
+                    }
+                });
+                
+                ui.separator();
+                
+                if ui.button("Add New Profile").clicked() {
+                    self.add_profile_open = true;
+                    self.new_profile = ConnectionProfile {
+                        id: Uuid::new_v4().to_string(),
+                        name: String::new(),
+                        connection_string: String::new(),
+                    };
+                }
+    
+                // Add Profile Modal
+                if self.add_profile_open {
+                    egui::Window::new("Add New Profile")
+                        .collapsible(false)
+                        .resizable(false)
+                        .show(ctx, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Name:");
+                                ui.text_edit_singleline(&mut self.new_profile.name);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Connection String:");
+                                ui.text_edit_singleline(&mut self.new_profile.connection_string);
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Save").clicked() {
+                                    if self.new_profile.name.is_empty() || self.new_profile.connection_string.is_empty() {
+                                        self.status_message = "Name and Connection String cannot be empty".to_string();
+                                    } else {
+                                        let dummy_key = [0u8; 32];
+                                        match self.connection_manager.add_profile(&self.new_profile, &dummy_key) {
+                                            Ok(_) => {
+                                                self.status_message = "Profile added successfully".to_string();
+                                                profiles_to_refresh = true;
+                                                self.add_profile_open = false;
+                                            }
+                                            Err(e) => {
+                                                self.status_message = format!("Failed to add profile: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.add_profile_open = false;
+                                }
+                            });
+                        });
+                }
+            });
+    
+        if close_window {
+            open = false;
+        }
+    
+        self.show_connection_manager = open;
+    
+        // Handle profile deletion
+        if let Some(index) = profile_to_delete {
+            if let Err(e) = self.connection_manager.delete_profile(&self.profiles[index].id) {
+                self.status_message = format!("Failed to delete profile: {}", e);
+            } else {
+                profiles_to_refresh = true;
+            }
+        }
+    
+        // Handle profile editing
+        if let Some(index) = profile_to_edit {
+            let profile = self.profiles[index].clone();
+            if !self.edit_profile(ctx, &profile) {
+                profiles_to_refresh = true;
+            }
+        }
+    
+        // Refresh profiles if needed
+        if profiles_to_refresh {
+            self.refresh_profiles();
+        }
+    }
 }
 
 impl eframe::App for MongoDBClient {
@@ -1000,6 +1250,8 @@ impl eframe::App for MongoDBClient {
                 }
             }
         }
+
+        self.ui_connection_manager(ctx);
 
         self.ui_layout(ctx);
 
