@@ -173,6 +173,10 @@ struct MongoDBClient {
     show_connection_manager: bool,
     add_profile_open: bool,
     new_profile: ConnectionProfile,
+    edit_profile_open: bool,
+    profile_to_edit: Option<ConnectionProfile>,
+    show_delete_confirmation: bool,
+    profile_to_delete: Option<usize>,
 }
 
 impl MongoDBClient {
@@ -216,6 +220,10 @@ impl MongoDBClient {
                 name: String::new(),
                 connection_string: String::new(),
             },
+            edit_profile_open: false,
+            profile_to_edit: None,
+            show_delete_confirmation: false,
+            profile_to_delete: None,
         }
     }
 
@@ -1173,11 +1181,6 @@ impl MongoDBClient {
                             };
                         }
                     });
-    
-                // Add Profile Modal
-                if self.add_profile_open {
-                    self.show_add_profile_modal(ctx, &mut profiles_to_refresh);
-                }
             });
     
         if close_window {
@@ -1194,19 +1197,27 @@ impl MongoDBClient {
     
         // Handle profile deletion
         if let Some(index) = profile_to_delete {
-            if let Err(e) = self.connection_manager.delete_profile(&self.profiles[index].id) {
-                self.status_message = format!("Failed to delete profile: {}", e);
-            } else {
-                profiles_to_refresh = true;
-            }
+            self.profile_to_delete = Some(index);
+            self.show_delete_confirmation = true;
         }
     
         // Handle profile editing
         if let Some(index) = profile_to_edit {
-            let profile = self.profiles[index].clone();
-            if !self.edit_profile(ctx, &profile) {
-                profiles_to_refresh = true;
-            }
+            self.profile_to_edit = Some(self.profiles[index].clone());
+            self.edit_profile_open = true;
+        }
+    
+        // Show modals
+        if self.add_profile_open {
+            self.show_add_profile_modal(ctx, &mut profiles_to_refresh);
+        }
+    
+        if self.edit_profile_open {
+            self.show_edit_profile_modal(ctx, &mut profiles_to_refresh);
+        }
+    
+        if self.show_delete_confirmation {
+            self.show_delete_confirmation_modal(ctx, &mut profiles_to_refresh);
         }
     
         // Refresh profiles if needed
@@ -1271,6 +1282,156 @@ impl MongoDBClient {
                         });
                     });
             });
+    }
+
+    fn show_edit_profile_modal(&mut self, ctx: &egui::Context, profiles_to_refresh: &mut bool) {
+        let accent_color = Color32::from_rgb(15, 157, 88); // Google Green
+        let bg_color = Color32::from_rgb(248, 249, 250); // Light Gray
+        let text_color = Color32::from_rgb(60, 64, 67); // Dark Gray
+    
+        let mut open = self.edit_profile_open;
+        let mut close_window = false;
+        let mut save_changes = false;
+    
+        // Local function for custom button
+        let custom_button = |ui: &mut egui::Ui, text: &str, color: Color32| {
+            ui.add_sized(
+                [100.0, 30.0],
+                egui::Button::new(RichText::new(text).color(Color32::WHITE))
+                    .fill(color)
+                    .rounding(4.0),
+            )
+            .clicked()
+        };
+    
+        if let Some(profile) = &mut self.profile_to_edit {
+            egui::Window::new("Edit Profile")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .fixed_size([350.0, 150.0])
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.style_mut().visuals.override_text_color = Some(text_color);
+                    ui.style_mut().spacing.item_spacing = egui::vec2(10.0, 10.0);
+    
+                    egui::Frame::none()
+                        .fill(bg_color)
+                        .inner_margin(10.0)
+                        .show(ui, |ui| {
+                            ui.heading(RichText::new("Edit Profile").color(accent_color).size(16.0));
+                            ui.add_space(10.0);
+    
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Name:").color(text_color));
+                                ui.text_edit_singleline(&mut profile.name);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Connection String:").color(text_color));
+                                ui.text_edit_singleline(&mut profile.connection_string);
+                            });
+                            ui.add_space(10.0);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if custom_button(ui, "Cancel", text_color) {
+                                    close_window = true;
+                                }
+                                if custom_button(ui, "Save", accent_color) {
+                                    save_changes = true;
+                                }
+                            });
+                        });
+                });
+    
+            if save_changes {
+                if profile.name.is_empty() || profile.connection_string.is_empty() {
+                    self.status_message = "Name and Connection String cannot be empty".to_string();
+                } else {
+                    let dummy_key = [0u8; 32];
+                    match self.connection_manager.update_profile(profile, &dummy_key) {
+                        Ok(_) => {
+                            self.status_message = "Profile updated successfully".to_string();
+                            *profiles_to_refresh = true;
+                            close_window = true;
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Failed to update profile: {}", e);
+                        }
+                    }
+                }
+            }
+        } else {
+            close_window = true;
+        }
+    
+        if close_window || !open {
+            self.edit_profile_open = false;
+            self.profile_to_edit = None;
+        }
+    }
+    
+    fn show_delete_confirmation_modal(&mut self, ctx: &egui::Context, profiles_to_refresh: &mut bool) {
+        let bg_color = Color32::from_rgb(248, 249, 250); // Light Gray
+        let text_color = Color32::from_rgb(60, 64, 67); // Dark Gray
+        let danger_color = Color32::from_rgb(234, 67, 53); // Danger color
+    
+        let mut open = self.show_delete_confirmation;
+        let mut close_window = false;
+        let mut confirm_delete = false;
+    
+        // Local function for custom button
+        let custom_button = |ui: &mut egui::Ui, text: &str, color: Color32| {
+            ui.add_sized(
+                [100.0, 30.0],
+                egui::Button::new(RichText::new(text).color(Color32::WHITE))
+                    .fill(color)
+                    .rounding(4.0),
+            )
+            .clicked()
+        };
+    
+        egui::Window::new("Confirm Deletion")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([300.0, 100.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.style_mut().visuals.override_text_color = Some(text_color);
+                ui.style_mut().spacing.item_spacing = egui::vec2(10.0, 10.0);
+    
+                egui::Frame::none()
+                    .fill(bg_color)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Are you sure you want to delete this profile?").color(text_color));
+                        ui.add_space(10.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if custom_button(ui, "Cancel", text_color) {
+                                close_window = true;
+                            }
+                            if custom_button(ui, "Delete", danger_color) {
+                                confirm_delete = true;
+                            }
+                        });
+                    });
+            });
+    
+        if confirm_delete {
+            if let Some(index) = self.profile_to_delete {
+                if let Err(e) = self.connection_manager.delete_profile(&self.profiles[index].id) {
+                    self.status_message = format!("Failed to delete profile: {}", e);
+                } else {
+                    self.status_message = "Profile deleted successfully".to_string();
+                    *profiles_to_refresh = true;
+                }
+            }
+            close_window = true;
+        }
+    
+        if close_window || !open {
+            self.show_delete_confirmation = false;
+            self.profile_to_delete = None;
+        }
     }
 }
 
