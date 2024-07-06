@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eframe = "0.22.0"
-egui = "0.22.0"
+eframe = "0.28.0"
+egui = "0.28.0"
 mongodb = "2.5.0"
 tokio = { version = "1.28.0", features = ["full", "rt-multi-thread"] }
 futures-util = "0.3.30"
