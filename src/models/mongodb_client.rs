@@ -4,7 +4,9 @@ use crate::components::{
 };
 use crate::services::{DatabaseService, QueryService};
 use crate::theme::Theme;
-use egui::{Align, Frame, Layout, Stroke, Ui};
+use egui::{
+    epaint, Align, Align2, FontId, Frame, Grid, Layout, Pos2, RichText, Rounding, Stroke, Ui, Vec2,
+};
 use std::sync::Arc;
 
 pub struct MongoDBClient {
@@ -89,28 +91,54 @@ impl MongoDBClient {
         });
     }
 
+    pub fn render_mongolite_logo(ui: &mut Ui, theme: Arc<Theme>) {
+        let logo_text = RichText::new("Mongolite")
+            .color(theme.accent_color)
+            .size(18.0)
+            .strong();
+
+        ui.add_space(5.0); // Add some top padding
+        ui.heading(logo_text);
+        ui.add_space(5.0); // Add some bottom padding
+    }
+
     fn render_top_section(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            self.connection_manager.render(ui, "connection_manager");
-            ui.add_space(20.0);
-            ui.vertical(|ui| {
-                self.database_selector.render(ui, "database_selector");
-                ui.add_space(5.0);
-                self.collection_selector.render(ui, "collection_selector");
+        const LABEL_MARGIN_RIGHT: f32 = 5.0;
+        ui.vertical(|ui| {
+            // Logo and theme toggle
+            ui.horizontal(|ui| {
+                MongoDBClient::render_mongolite_logo(ui, Arc::clone(&self.theme));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .button(if self.is_dark_mode {
+                            "Light Theme"
+                        } else {
+                            "Dark Theme"
+                        })
+                        .clicked()
+                    {
+                        self.toggle_theme(ui.ctx());
+                    }
+                });
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .button(if self.is_dark_mode {
-                        "Light Theme"
-                    } else {
-                        "Dark Theme"
-                    })
-                    .clicked()
-                {
-                    self.toggle_theme(ui.ctx());
-                }
-                ui.add_space(20.0);
+
+            ui.add_space(10.0);
+
+            ui.horizontal(|ui| {
+                self.connection_manager.render(ui, "connection_manager");
+            });
+
+            ui.add_space(10.0);
+
+            // Frame for database and collection selection
+            ui.vertical(|ui| {
+                // Database row
+                self.database_selector.render(ui, "database_selector");
+                ui.add_space(10.0);
+
+                // Collection row
+                self.collection_selector.render(ui, "collection_selector");
+                ui.add_space(10.0);
             });
         });
     }

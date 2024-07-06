@@ -27,7 +27,9 @@ impl Component for CollectionSelector {
                     .color(self.theme.text_color)
                     .strong(),
             );
+            ui.add_space(5.0);
             ComboBox::from_id_source(format!("{}_collection_selector", id_prefix))
+                .width(290.0)
                 .selected_text(&self.selected_collection)
                 .show_ui(ui, |ui| {
                     for collection in &self.collections {

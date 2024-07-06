@@ -63,7 +63,6 @@ impl Component for QueryBuilder {
             ui.add_space(20.0);
 
             // Execute button
-            let button_size = Vec2::new(120.0, 30.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                 if ThemedButton::new("Execute Query", Arc::clone(&self.theme))
                     .ui(ui)

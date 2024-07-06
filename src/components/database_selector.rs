@@ -27,7 +27,9 @@ impl Component for DatabaseSelector {
                     .color(self.theme.text_color)
                     .strong(),
             );
+            ui.add_space(10.0);
             ComboBox::from_id_source("database_selector")
+                .width(290.0)
                 .selected_text(&self.selected_database)
                 .show_ui(ui, |ui| {
                     for db in &self.databases {

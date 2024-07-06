@@ -27,7 +27,8 @@ impl Component for ConnectionManager {
                 RichText::new("Connection:")
                     .color(self.theme.text_color)
                     .strong(),
-            );
+            )
+            .on_hover_text("Select or manage database connections");
             ui.text_edit_singleline(&mut self.connection_string);
 
             if ThemedButton::new("Connect", Arc::clone(&self.theme))
