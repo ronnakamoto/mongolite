@@ -15,6 +15,7 @@ pub struct ConnectionManager {
     new_profile: ConnectionProfile,
     edit_mode: bool,
     selected_profile: Option<ConnectionProfile>,
+    delete_confirmation: Option<String>, // Stores the ID of the profile to be deleted
 }
 
 impl ConnectionManager {
@@ -31,11 +32,15 @@ impl ConnectionManager {
             },
             edit_mode: false,
             selected_profile: None,
+            delete_confirmation: None,
         }
     }
 
     fn render_dialog_content(&mut self, ui: &mut Ui) {
         let profiles = self.profile_manager.borrow().get_profiles().to_vec();
+
+        ui.heading(RichText::new("Manage Connection Profiles").color(self.theme.text_color));
+        ui.add_space(10.0);
 
         if profiles.is_empty() {
             ui.vertical_centered(|ui| {
@@ -52,35 +57,45 @@ impl ConnectionManager {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for profile in profiles.iter() {
                     ui.horizontal(|ui| {
-                        if ui.button(&profile.name).clicked() {
-                            self.selected_profile = Some(profile.clone());
-                            self.connection_string = profile.connection_string.clone();
-                        }
-                        if ThemedButton::new("Edit", Arc::clone(&self.theme))
-                            .ui(ui)
-                            .clicked()
-                        {
-                            self.new_profile = profile.clone();
-                            self.edit_mode = true;
-                        }
-                        if ThemedButton::new("Delete", Arc::clone(&self.theme))
-                            .ui(ui)
-                            .clicked()
-                        {
-                            self.profile_manager
-                                .borrow_mut()
-                                .delete_profile(&profile.id);
-                        }
+                        ui.label(RichText::new(&profile.name).color(self.theme.text_color));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ThemedButton::new("Delete", Arc::clone(&self.theme))
+                                .ui(ui)
+                                .clicked()
+                            {
+                                self.delete_confirmation = Some(profile.id.clone());
+                            }
+                            if ThemedButton::new("Edit", Arc::clone(&self.theme))
+                                .ui(ui)
+                                .clicked()
+                            {
+                                self.new_profile = profile.clone();
+                                self.edit_mode = true;
+                            }
+                            if ThemedButton::new("Select", Arc::clone(&self.theme))
+                                .ui(ui)
+                                .clicked()
+                            {
+                                self.selected_profile = Some(profile.clone());
+                                self.connection_string = profile.connection_string.clone();
+                            }
+                        });
                     });
+                    ui.add_space(5.0);
                 }
             });
         }
 
+        ui.add_space(10.0);
         ui.separator();
+        ui.add_space(10.0);
 
         // Render add/edit form
         ui.horizontal(|ui| {
-            ui.add_sized([100.0, 20.0], egui::Label::new("Name:"));
+            ui.add_sized(
+                [100.0, 20.0],
+                egui::Label::new(RichText::new("Name:").color(self.theme.text_color)),
+            );
             ui.add_sized(
                 [200.0, 20.0],
                 egui::TextEdit::singleline(&mut self.new_profile.name),
@@ -88,7 +103,10 @@ impl ConnectionManager {
         });
         ui.add_space(5.0);
         ui.horizontal(|ui| {
-            ui.add_sized([100.0, 20.0], egui::Label::new("Connection String:"));
+            ui.add_sized(
+                [100.0, 20.0],
+                egui::Label::new(RichText::new("Connection String:").color(self.theme.text_color)),
+            );
             ui.add_sized(
                 [200.0, 20.0],
                 egui::TextEdit::singleline(&mut self.new_profile.connection_string),
@@ -143,14 +161,70 @@ impl ConnectionManager {
         });
     }
 
+    fn show_delete_confirmation(&mut self, ctx: &Context) {
+        let mut delete_confirmed = false;
+        let mut cancel_confirmed = false;
+
+        if let Some(profile_id) = &self.delete_confirmation {
+            let profile_name = self
+                .profile_manager
+                .borrow()
+                .get_profiles()
+                .iter()
+                .find(|p| p.id == *profile_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            Window::new("Confirm Deletion")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Are you sure you want to delete the profile '{}'?",
+                            profile_name
+                        ))
+                        .color(self.theme.text_color),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                        if ThemedButton::new("Yes", Arc::clone(&self.theme))
+                            .ui(ui)
+                            .clicked()
+                        {
+                            delete_confirmed = true;
+                        }
+                        if ThemedButton::new("No", Arc::clone(&self.theme))
+                            .ui(ui)
+                            .clicked()
+                        {
+                            cancel_confirmed = true;
+                        }
+                    });
+                });
+        }
+
+        // Handle the confirmation outside of the closure
+        if delete_confirmed {
+            if let Some(profile_id) = &self.delete_confirmation {
+                self.profile_manager.borrow_mut().delete_profile(profile_id);
+            }
+            self.delete_confirmation = None;
+        } else if cancel_confirmed {
+            self.delete_confirmation = None;
+        }
+    }
+
     pub fn show(&mut self, ctx: &Context) {
         let mut show_dialog = self.show_dialog;
         Window::new("Connection Profiles")
             .open(&mut show_dialog)
+            .default_size([400.0, 300.0])
             .show(ctx, |ui| {
                 self.render_dialog_content(ui);
             });
         self.show_dialog = show_dialog;
+
+        self.show_delete_confirmation(ctx);
     }
 }
 
